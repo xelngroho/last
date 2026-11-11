@@ -1,4 +1,11 @@
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import config from '../../config.js'
+import { btn } from '../../src/lib/buttons.js'
+import { heading, kv, item, line } from '../../src/lib/ui-style.js'
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 const pluginConfig = {
   name: 'menu',
@@ -156,8 +163,157 @@ function buildMenuText(m) {
   return out
 }
 
-async function handler(m) {
-  await m.reply(buildMenuText(m))
+// =====================================================================
+//  TAMPILAN BARU — kartu bertombol ala vanXone (data MENU_SECTIONS di atas tidak diubah)
+//  Pola: [ Saluran (link) , Owner (link) , Command (list kategori) ]
+// =====================================================================
+const CAT_DESC = {
+  canvas: 'Quote, fake chat, dan kartu visual',
+  ai: 'Chat AI dan generate gambar dari teks',
+  fun: 'Hiburan, tanya-jawab random, meme',
+  primbon: 'Ramalan, zodiak, arti nama dan mimpi',
+  islami: 'Al-Quran, murottal, doa, dan niat sholat',
+  berita: 'Berita terkini dari berbagai sumber',
+  info: 'Gempa, bola, jadwal libur, info game',
+  utility: 'Ping, screenshot website, dan alat bantu',
+  owner: 'Perintah khusus owner bot',
+}
+const CAT_ALIAS = { maker: 'canvas', tools: 'utility', util: 'utility', islam: 'islami', religi: 'islami', news: 'berita' }
+
+// "CANVAS & MAKER" -> "Canvas & Maker"; kata sangat pendek (AI) tetap kapital
+const titleCase = (s) => s.split(' ').map((w) => (w.length <= 2 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())).join(' ')
+
+// MENU_SECTIONS -> daftar kategori (id, ikon, label, jumlah) tanpa mengubah datanya
+const CATEGORIES = MENU_SECTIONS.map((section) => {
+  const [icon, ...rest] = section.title.split(' ')
+  const text = rest.join(' ')
+  const id = text.split(' ')[0].toLowerCase().replace(/[^a-z0-9]/g, '')
+  return { id, icon, label: titleCase(text), desc: CAT_DESC[id] || `Kumpulan perintah ${text.toLowerCase()}`, section }
+})
+
+const findCategory = (q) => {
+  const k = String(q || '').toLowerCase().trim()
+  const id = CAT_ALIAS[k] || k
+  return CATEGORIES.find((c) => c.id === id)
+}
+
+// dua kategori terbesar (min. 8 fitur) diberi badge populer
+const POPULAR = new Set(
+  [...CATEGORIES].filter((c) => c.section.items.length >= 8).sort((a, b) => b.section.items.length - a.section.items.length).slice(0, 2).map((c) => c.id)
+)
+
+function categoryRows(prefix) {
+  return CATEGORIES.map((c) => {
+    const n = c.section.items.length
+    return {
+      header: POPULAR.has(c.id) ? `🔥 Populer (${n} Fitur)` : `${n} Fitur`,
+      title: `${c.icon} ${c.label}`,
+      description: c.desc.slice(0, 72),
+      id: `${prefix}menu ${c.id}`,
+    }
+  })
+}
+
+function actionRows(prefix) {
+  return [
+    { header: 'Aksi', title: '🏓 Ping', description: 'Cek respons bot', id: `${prefix}ping` },
+    { header: 'Aksi', title: '📜 Semua Perintah', description: 'Daftar lengkap seluruh command', id: `${prefix}allmenu` },
+  ]
+}
+
+// tombol link hanya muncul kalau datanya ada di config.json (owner_wa, saluran)
+function linkButtons() {
+  const out = []
+  if (/^https?:\/\//i.test(config.saluran || '')) out.push(btn.url('Saluran Resmi', config.saluran))
+  const wa = String(config.owner_wa || '').replace(/\D/g, '')
+  if (wa.length >= 8) out.push(btn.url('Hubungi Owner', `https://wa.me/${wa}`))
+  return out
+}
+
+function navButtons(prefix, { withHome = false } = {}) {
+  const rows = [
+    ...(withHome ? [{ header: 'Menu', title: '🏠 Beranda', description: 'Kembali ke menu utama', id: `${prefix}menu` }] : []),
+    ...categoryRows(prefix),
+    ...actionRows(prefix),
+  ]
+  const links = linkButtons()
+  return [...links, btn.list(links.length ? 'Command' : '📂 LIHAT MENU', [{ title: 'PILIH MENU', rows }])]
+}
+
+// gambar header opsional: media/menu.jpg di folder project, atau "menu_image" (URL https) di config.json
+function menuImage() {
+  try {
+    const file = path.join(ROOT, 'media', 'menu.jpg')
+    if (fs.existsSync(file)) return fs.readFileSync(file)
+  } catch {}
+  return /^https?:\/\//i.test(config.menu_image || '') ? { url: config.menu_image } : null
+}
+
+function homeText(m) {
+  const prefix = m.prefix || '/'
+  const namaBot = config.nama_ai || 'Nova AI'
+  const total = MENU_SECTIONS.reduce((n, s) => n + s.items.length, 0)
+  const out = [
+    heading(namaBot),
+    kv('salam', `Selamat ${getGreeting()}, ${m.pushName || 'Kak'}`),
+    kv('owner', 'Axel'),
+    kv('prefix', prefix),
+    kv('total', `${total} command`),
+    kv('kategori', String(CATEGORIES.length)),
+    '',
+    heading('kategori'),
+    ...CATEGORIES.map((c) => item(`${c.icon} ${c.label} — ${c.section.items.length} fitur`)),
+    '',
+    line,
+    '📂 Tekan tombol di bawah untuk membuka daftar perintah.',
+  ]
+  return out.join('\n')
+}
+
+function categoryText(m, cat) {
+  const prefix = m.prefix || '/'
+  const out = [heading(`${cat.icon} ${cat.label}`), kv('fitur', `${cat.section.items.length} command`), '']
+  for (const [cmd, alias, desc] of cat.section.items) {
+    const al = alias === '-' ? '' : ` _(${alias.split(' | ').slice(0, 3).join(' | ')}${alias.split(' | ').length > 3 ? ' …' : ''})_`
+    out.push(item(`*${prefix}${cmd}*${al}`), `   ${desc}`)
+  }
+  out.push('', line, '📂 Pilih kategori lain lewat tombol di bawah.')
+  return out.join('\n')
+}
+
+async function sendCard(m, sock, body, buttons, fallbackText) {
+  if (typeof sock?.sendButtons === 'function') {
+    try {
+      const img = menuImage()
+      await sock.sendButtons(m.chat, {
+        text: body,
+        footer: `${config.nama_ai || 'Nova AI'} • Axel`,
+        buttons,
+        ...(img ? { image: img } : {}),
+      }, { quoted: m })
+      return
+    } catch (e) {
+      console.error('[MENU] gagal kirim kartu bertombol, pakai teks biasa:', e.message)
+    }
+  }
+  await m.reply(fallbackText)
+}
+
+async function handler(m, { sock, args } = {}) {
+  const prefix = m.prefix || '/'
+  const sub = String(args?.[0] || '').toLowerCase()
+
+  // daftar lengkap = tampilan teks lama (tidak diubah): .allmenu / .menu1 / .menu all
+  if (['allmenu', 'menu1'].includes(m.command) || sub === 'all') {
+    return m.reply(buildMenuText(m))
+  }
+
+  const cat = sub ? findCategory(sub) : null
+  if (cat) {
+    return sendCard(m, sock, categoryText(m, cat), navButtons(prefix, { withHome: true }), buildMenuText(m))
+  }
+  // tanpa argumen / argumen tidak dikenal -> beranda
+  return sendCard(m, sock, homeText(m), navButtons(prefix), buildMenuText(m))
 }
 
 export { pluginConfig as config, handler }
