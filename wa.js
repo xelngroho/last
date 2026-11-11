@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'url'
 import QRCode from 'qrcode'
 import { Sticker, StickerTypes } from 'wa-sticker-formatter'
 import SoundCloud from 'soundcloud-scraper'
+import makeButtonsHelper from './src/lib/buttons.js'
 
 const scClient = new SoundCloud.Client()
 
@@ -105,6 +106,22 @@ function extractMessageText(message) {
   if (!message) return ''
   return message.conversation || message.extendedTextMessage?.text ||
          message.imageMessage?.caption || message.videoMessage?.caption || ''
+}
+
+// Ambil ID dari tombol/list yang ditekan user (kartu bertombol, mis. menu). ID-nya = teks perintah
+// (contoh '/menu fun'), jadi bisa langsung masuk jalur plugin yang sama seperti pesan teks biasa.
+function extractButtonId(message) {
+  const flow = message?.interactiveResponseMessage?.nativeFlowResponseMessage
+  if (flow?.paramsJson) {
+    try {
+      const p = JSON.parse(flow.paramsJson)
+      const id = p.id || p.selectedId || p.row_id || ''
+      if (id) return id
+    } catch {}
+  }
+  return message?.templateButtonReplyMessage?.selectedId ||
+         message?.buttonsResponseMessage?.selectedButtonId ||
+         message?.listResponseMessage?.singleSelectReply?.selectedRowId || ''
 }
 
 const MEDIA_TYPES = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage']
@@ -234,6 +251,9 @@ async function connectToWhatsApp() {
     browser: ['Nova AI', 'Chrome', '125.0.0']
   })
 
+  // pasang pengirim pesan bertombol (sock.sendButtons) untuk tampilan menu baru
+  makeButtonsHelper(sock)
+
   sock.getName = async (jid) => {
     if (!jid) return null
     const botId = sock.user?.id?.split(':')[0] + '@s.whatsapp.net'
@@ -290,7 +310,7 @@ async function connectToWhatsApp() {
 
     if (msg.key.fromMe && !isOwner) return 
 
-    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || ''
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || extractButtonId(msg.message)
     if (!text.trim()) return
 
     const args = text.trim().split(/ +/)
