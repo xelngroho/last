@@ -7,3 +7,5 @@ qr_current.png
 qr_current.txt
 seen_users.json
 token.json
+custom-plugins
+plugin-backup

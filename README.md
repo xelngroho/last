@@ -97,3 +97,48 @@ lagi, dan akun dashboard yang dibuat manual hilang.
   detail di [`DEPLOY.md`](./DEPLOY.md#proteksi-api-key-untuk-chat).
 - **Command chat admin**: `/ai`, `/add`, `/delete`, `/change`, `/apikey`
   — semua butuh `kode_akses` dari `config.json`.
+
+---
+
+## Tambah plugin dari WhatsApp (`.addfitur`)
+
+Owner bisa memasang plugin langsung dari chat, tanpa upload file manual dan tanpa restart.
+Format plugin sama persis dengan plugin **vanXone** (CommonJS):
+
+```js
+module.exports = {
+  name: 'halo',
+  command: ['halo', 'hai'],
+  category: 'tools',          // menentukan folder & kategori di .menu
+  desc: 'Sapa balik',
+  usage: '<teks>',
+  // owner: true,  group: true,  admin: true,  botAdmin: true
+  run: async ({ sock, msg, from, sender, args, text, prefix, reply }) => {
+    await reply(`Halo ${text || 'dunia'}!`)
+  }
+}
+```
+
+| Perintah | Fungsi |
+|---|---|
+| `.addfitur` (reply pesan berisi kode) | Pasang plugin. Nama & kategori dibaca otomatis dari `name` dan `category` di kodenya |
+| `.addfitur tools/play` | Atur sendiri folder/kategori dan nama file |
+| `.addfitur -f` | Timpa plugin yang sudah ada (yang lama dicadangkan) |
+| `.addfitur` + kirim file `.js` (caption) | Pasang dari file; reply ke file `.js` juga bisa |
+| `.addfitur template` | Tampilkan kerangka plugin |
+| `.delfitur <perintah>` | Hapus plugin custom (dicadangkan dulu) |
+| `.getfitur <perintah>` | Kirim file kode sebuah plugin |
+| `.reloadfitur` | Muat ulang plugin custom dari disk |
+
+Kode diuji dulu (sintaks + bentuk plugin + bentrok perintah) sebelum dipasang, dan kalau gagal
+dimuat setelah dipasang, keadaan dikembalikan. Plugin custom otomatis muncul di `.menu`.
+
+- **Lokasi:** `<DATA_DIR>/custom-plugins/<kategori>/<nama>.cjs`, cadangan di `<DATA_DIR>/plugin-backup/`.
+  Karena ikut `DATA_DIR`, plugin **tidak hilang saat redeploy** selama Railway Volume sudah dipasang
+  (lihat bagian Volume di atas). Tanpa Volume, plugin hilang tiap redeploy.
+- **Tidak bisa dipakai:** kode ESM (`import`/`export`), dan plugin vanXone yang memakai `require('../../lib/...')`
+  karena lib internal vanXone tidak ada di Nova AI. Modul npm yang belum terpasang akan dilaporkan
+  beserta perintah `npm install`-nya.
+- **Dilindungi:** `ds`, `setoken`, `self`, `ai`, `sc`, `spotify`, `brat`, `dd`, `menu`, dan 4 perintah pengelola
+  tidak boleh dipakai/ditimpa plugin custom.
+- ⚠️ Plugin berjalan dengan akses penuh ke server. Pasang hanya kode yang kamu percaya.

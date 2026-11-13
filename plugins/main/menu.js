@@ -127,6 +127,10 @@ const MENU_SECTIONS = [
       ['ds', '-', 'Disconnect sementara'],
       ['setoken {token}', '-', 'Simpan token Vercel'],
       ['deploy', 'vercel', 'Deploy HTML ke Vercel'],
+      ['addfitur', 'addplugin | pasangfitur', 'Pasang plugin dari WhatsApp (reply kode / kirim file .js)'],
+      ['delfitur', 'delplugin | hapusfitur', 'Hapus plugin custom'],
+      ['getfitur', 'getplugin | ambilfitur', 'Kirim file kode sebuah plugin'],
+      ['reloadfitur', 'reload | muatulang', 'Muat ulang plugin custom dari disk'],
     ],
   },
 ]
@@ -136,7 +140,8 @@ function buildMenuText(m) {
   const namaBot = config.nama_ai || 'Nova AI'
   const namaOwner = 'Axel'
   const greeting = getGreeting()
-  const totalCmd = MENU_SECTIONS.reduce((n, s) => n + s.items.length, 0)
+  const sections = allSections()
+  const totalCmd = sections.reduce((n, s) => n + s.items.length, 0)
 
   const line = '─'.repeat(28)
   let out = ''
@@ -147,7 +152,7 @@ function buildMenuText(m) {
   out += `│ Total   : ${totalCmd} command\n`
   out += `╰${line}\n\n`
 
-  for (const section of MENU_SECTIONS) {
+  for (const section of sections) {
     out += `┌─ ${section.title}\n`
     for (const [cmd, alias, desc] of section.items) {
       out += `│ ⟡ ${prefix}${cmd}`
@@ -183,30 +188,56 @@ const CAT_ALIAS = { maker: 'canvas', tools: 'utility', util: 'utility', islam: '
 // "CANVAS & MAKER" -> "Canvas & Maker"; kata sangat pendek (AI) tetap kapital
 const titleCase = (s) => s.split(' ').map((w) => (w.length <= 2 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())).join(' ')
 
-// MENU_SECTIONS -> daftar kategori (id, ikon, label, jumlah) tanpa mengubah datanya
-const CATEGORIES = MENU_SECTIONS.map((section) => {
-  const [icon, ...rest] = section.title.split(' ')
-  const text = rest.join(' ')
-  const id = text.split(' ')[0].toLowerCase().replace(/[^a-z0-9]/g, '')
-  return { id, icon, label: titleCase(text), desc: CAT_DESC[id] || `Kumpulan perintah ${text.toLowerCase()}`, section }
-})
+const idOf = (title) => title.split(' ').slice(1).join(' ').split(' ')[0].toLowerCase().replace(/[^a-z0-9]/g, '')
+
+// MENU_SECTIONS + plugin custom (hasil .addfitur) dari registry wa.js. Data MENU_SECTIONS sendiri tidak diubah.
+// Kategori plugin custom yang cocok dengan kategori yang ada (mis. tools -> Utility) digabung ke situ,
+// selain itu dibuatkan kategori baru berikon 🧩.
+function allSections() {
+  const secs = MENU_SECTIONS.map((s) => ({ ...s, items: [...s.items] }))
+  const reg = typeof globalThis.__novaPlugins === 'function' ? globalThis.__novaPlugins() : []
+  for (const p of reg.filter((x) => x.custom)) {
+    const raw = String(p.category || 'custom').toLowerCase().replace(/[^a-z0-9]/g, '') || 'custom'
+    const catId = CAT_ALIAS[raw] || raw
+    let sec = secs.find((s) => idOf(s.title) === catId)
+    if (!sec) {
+      sec = { title: `🧩 ${String(p.category || 'custom').toUpperCase()}`, items: [] }
+      secs.push(sec)
+    }
+    const [first, ...rest] = p.command
+    sec.items.push([first, rest.length ? rest.join(' | ') : '-', p.desc || '-'])
+  }
+  return secs
+}
+
+// sections -> daftar kategori (id, ikon, label) untuk tombol list
+function getCategories() {
+  return allSections().map((section) => {
+    const [icon, ...rest] = section.title.split(' ')
+    const text = rest.join(' ')
+    const id = idOf(section.title)
+    return { id, icon, label: titleCase(text), desc: CAT_DESC[id] || (icon === '🧩' ? 'Fitur tambahan (custom)' : `Kumpulan perintah ${text.toLowerCase()}`), section }
+  })
+}
 
 const findCategory = (q) => {
   const k = String(q || '').toLowerCase().trim()
-  const id = CAT_ALIAS[k] || k
-  return CATEGORIES.find((c) => c.id === id)
+  const cats = getCategories()
+  return cats.find((c) => c.id === k) || cats.find((c) => c.id === CAT_ALIAS[k])
 }
 
 // dua kategori terbesar (min. 8 fitur) diberi badge populer
-const POPULAR = new Set(
-  [...CATEGORIES].filter((c) => c.section.items.length >= 8).sort((a, b) => b.section.items.length - a.section.items.length).slice(0, 2).map((c) => c.id)
+const popularIds = (cats) => new Set(
+  [...cats].filter((c) => c.section.items.length >= 8).sort((a, b) => b.section.items.length - a.section.items.length).slice(0, 2).map((c) => c.id)
 )
 
 function categoryRows(prefix) {
-  return CATEGORIES.map((c) => {
+  const cats = getCategories()
+  const popular = popularIds(cats)
+  return cats.map((c) => {
     const n = c.section.items.length
     return {
-      header: POPULAR.has(c.id) ? `🔥 Populer (${n} Fitur)` : `${n} Fitur`,
+      header: popular.has(c.id) ? `🔥 Populer (${n} Fitur)` : `${n} Fitur`,
       title: `${c.icon} ${c.label}`,
       description: c.desc.slice(0, 72),
       id: `${prefix}menu ${c.id}`,
@@ -252,7 +283,8 @@ function menuImage() {
 function homeText(m) {
   const prefix = m.prefix || '/'
   const namaBot = config.nama_ai || 'Nova AI'
-  const total = MENU_SECTIONS.reduce((n, s) => n + s.items.length, 0)
+  const CATEGORIES = getCategories()
+  const total = CATEGORIES.reduce((n, c) => n + c.section.items.length, 0)
   const out = [
     heading(namaBot),
     kv('salam', `Selamat ${getGreeting()}, ${m.pushName || 'Kak'}`),

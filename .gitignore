@@ -8,6 +8,8 @@ seen_users.json
 self_mode.txt
 qr_current.png
 qr_current.txt
+custom-plugins/
+plugin-backup/
 
 # npm
 npm-debug.log*

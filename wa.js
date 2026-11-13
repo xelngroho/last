@@ -8,6 +8,9 @@ import QRCode from 'qrcode'
 import { Sticker, StickerTypes } from 'wa-sticker-formatter'
 import SoundCloud from 'soundcloud-scraper'
 import makeButtonsHelper from './src/lib/buttons.js'
+import { createRequire } from 'module'
+import { wrapVanXonePlugin } from './src/lib/vanxone-compat.js'
+import { CUSTOM_DIR, prepareCustomDir } from './src/lib/pluginmgr.js'
 
 const scClient = new SoundCloud.Client()
 
@@ -100,6 +103,19 @@ function buildWelcome(aiName) {
 const plugins = {}
 const pluginDir = path.join(__dirname, 'plugins')
 if (!fs.existsSync(pluginDir)) fs.mkdirSync(pluginDir)
+
+// Registry metadata semua plugin yang termuat (dipakai .addfitur/.delfitur/.getfitur dan tampilan .menu)
+const registry = []
+globalThis.__novaPlugins = () => registry
+const requireCjs = createRequire(import.meta.url)
+const relOfPlugin = (fp) => path.relative(fp.startsWith(CUSTOM_DIR + path.sep) ? CUSTOM_DIR : pluginDir, fp)
+// dependensi untuk plugin format vanXone (lihat src/lib/vanxone-compat.js)
+const vxDeps = {
+  getRegistry: () => registry,
+  reload: () => loadPlugins(),
+  config: () => { try { return JSON.parse(fs.readFileSync(configPath, 'utf-8')) } catch { return configData } },
+  botName: () => configData.nama_ai || 'Nova AI',
+}
 
 // Ambil isi teks dari sebuah pesan WA mentah (dipakai buat pesan utama maupun quoted)
 function extractMessageText(message) {
@@ -199,19 +215,46 @@ const loadPlugins = async () => {
   // baru, 1 level subfolder — sesuai field "category" yang dideklarasiin
   // plugin itu sendiri, dan sesuai kedalaman folder yang diasumsikan
   // import relatif kayak '../../config.js' di dalam plugin itu).
-  const entries = fs.readdirSync(pluginDir, { withFileTypes: true })
+  //
+  // Bisa dipanggil ulang (.addfitur / .reloadfitur): isi lama dikosongkan lalu semua dimuat lagi.
+  // Folder yang dipindai: plugins/ (bawaan repo) + custom-plugins/ (hasil .addfitur; ikut Volume kalau DATA_DIR diset).
+  // File .js = ESM (format lama & baru), file .cjs = CommonJS format vanXone.
+  for (const k of Object.keys(plugins)) delete plugins[k]
+  registry.length = 0
+  const failed = []
+  prepareCustomDir()
+  const isPluginFile = f => f.endsWith('.js') || f.endsWith('.cjs')
   const files = []
-  for (const entry of entries) {
-    if (entry.isFile() && entry.name.endsWith('.js')) {
-      files.push(path.join(pluginDir, entry.name))
-    } else if (entry.isDirectory()) {
-      const sub = fs.readdirSync(path.join(pluginDir, entry.name)).filter(f => f.endsWith('.js'))
-      for (const f of sub) files.push(path.join(pluginDir, entry.name, f))
+  for (const root of [pluginDir, CUSTOM_DIR]) {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+      if (entry.isFile() && isPluginFile(entry.name)) {
+        files.push(path.join(root, entry.name))
+      } else if (entry.isDirectory()) {
+        const sub = fs.readdirSync(path.join(root, entry.name)).filter(isPluginFile)
+        for (const f of sub) files.push(path.join(root, entry.name, f))
+      }
     }
   }
 
   for (const filePath of files) {
     try {
+      const custom = filePath.startsWith(CUSTOM_DIR + path.sep)
+      const folder = path.basename(path.dirname(filePath))
+
+      // Format vanXone (.cjs): module.exports = { name, command, category, desc, run(ctx) }
+      if (filePath.endsWith('.cjs')) {
+        delete requireCjs.cache[requireCjs.resolve(filePath)]
+        const vp = requireCjs(filePath)
+        if (!vp || typeof vp.run !== 'function' || !vp.command) throw new Error('format plugin vanXone salah (butuh command & run)')
+        const cmds = (Array.isArray(vp.command) ? vp.command : [vp.command]).map(c => String(c).toLowerCase())
+        Object.defineProperty(vp, '__file', { value: filePath, enumerable: false, configurable: true, writable: true })
+        registry.push({ name: vp.name || cmds[0], command: cmds, category: custom ? folder : (vp.category || folder), desc: vp.desc || '', usage: vp.usage || '', owner: !!vp.owner, custom, format: 'vanxone', __file: filePath })
+        const wrapped = wrapVanXonePlugin(vp, vxDeps)
+        cmds.forEach(c => { plugins[c] = wrapped })
+        continue
+      }
+
       const pluginUrl = pathToFileURL(filePath).href
       const plugin = await import(pluginUrl)
 
@@ -220,6 +263,7 @@ const loadPlugins = async () => {
         plugin.default.command.forEach(cmd => {
           plugins[cmd] = plugin.default.handler
         })
+        registry.push({ name: String(plugin.default.command[0]), command: plugin.default.command.map(c => String(c).toLowerCase()), category: folder, desc: '', owner: false, custom, format: 'nova', __file: filePath })
       }
       // Format baru: export { config, handler } — pakai objek "m" ala framework lain
       else if (plugin.config && plugin.handler) {
@@ -229,13 +273,16 @@ const loadPlugins = async () => {
         names.forEach(cmd => {
           plugins[cmd.toLowerCase()] = wrapNewFormatPlugin(plugin.handler)
         })
+        registry.push({ name: String(names[0]), command: names.map(c => String(c).toLowerCase()), category: plugin.config.category || folder, desc: plugin.config.description || '', owner: !!plugin.config.isOwner, custom, format: 'nova', __file: filePath })
       }
     } catch (e) {
       // Satu plugin gagal load (mis. dependency belum ke-install) gak boleh
       // bikin SEMUA plugin lain ikut gagal — log doang, lanjut ke file berikutnya.
-      console.error(`⚠️  Plugin gagal dimuat: ${path.relative(pluginDir, filePath)} — ${e.message}`)
+      console.error(`⚠️  Plugin gagal dimuat: ${relOfPlugin(filePath)} — ${e.message}`)
+      failed.push({ file: relOfPlugin(filePath), full: filePath, error: e.message })
     }
   }
+  return { loaded: registry.length, failed }
 }
 await loadPlugins()
 
@@ -310,11 +357,13 @@ async function connectToWhatsApp() {
 
     if (msg.key.fromMe && !isOwner) return 
 
-    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || extractButtonId(msg.message)
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption ||
+                 msg.message.documentMessage?.caption || msg.message.documentWithCaptionMessage?.message?.documentMessage?.caption ||
+                 extractButtonId(msg.message)
     if (!text.trim()) return
 
     const args = text.trim().split(/ +/)
-    const command = args[0].toLowerCase().replace(/^[\/\.#]/, '')
+    const command = args[0].toLowerCase().replace(/^[\/\.#]/, '').split(/\s/)[0]
     const cmdFull = text.trim().toLowerCase()
 
     // ── FITUR /DS (DISCONNECT) ──
@@ -359,7 +408,7 @@ async function connectToWhatsApp() {
     // 1. Eksekusi Plugin Dulu
     if (plugins[command]) {
       try {
-        await plugins[command](msg, sock, args)
+        await plugins[command](msg, sock, args, { isOwner, body: text })
         return
       } catch (e) {
         await sock.sendMessage(from, { text: '❌ Error plugin: ' + e.message })
